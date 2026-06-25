@@ -1,0 +1,121 @@
+/**
+ * OmniShift — Firestore Security Rules
+ * =====================================
+ * This is the REAL authorization layer. The client-side requireAdmin()
+ * check in index.html is UX only — anyone can bypass it via devtools.
+ * These rules are what actually stops a Viewer (or a logged-out attacker)
+ * from writing data.
+ *
+ * DEPLOY:
+ *   1. Save this as firestore.rules in your project root
+ *   2. firebase deploy --only firestore:rules
+ *   (or paste directly into Firebase Console → Firestore → Rules)
+ */
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/profiles/$(request.auth.uid))
+        && myProfile().is_active != false;
+    }
+
+    function isActiveAdmin() {
+      return isActiveUser() && myProfile().role == 'admin';
+    }
+
+    // ── profiles ─────────────────────────────────────────
+    // Read: any active signed-in user (needed for Users page, avatars,
+    //       audit log actor names, and the login flow's own profile check
+    //       — self-read is allowed unconditionally below, which is also
+    //       what lets the login flow read its own role/is_active).
+    // Write: admins can write any profile. A user may always update their
+    //       OWN `color` field (and nothing else) without being an admin.
+    //       Account creation/role/is_active changes happen via the
+    //       adminCreateUser / adminResetPassword / bootstrapFirstAdmin
+    //       Cloud Functions, which use the Admin SDK and bypass these
+    //       rules entirely — so admin-write here is for
+    //       saveEditUser/deleteUser/etc. There is no public sign-up in
+    //       the client; the self-create rule below is defense-in-depth
+    //       (kept narrow — viewer only, never admin) rather than something
+    //       the current UI exercises.
+    match /profiles/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isActiveUser());
+      allow list: if isActiveUser();
+
+      allow update: if isActiveAdmin()
+        || (isSignedIn() && request.auth.uid == userId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['color']));
+
+      // A signed-in user with no existing profile may create their OWN
+      // profile, but only as an unprivileged, active viewer — this can
+      // never be used to self-grant admin. bootstrapFirstAdmin and
+      // adminCreateUser both go through the Admin SDK and never need this.
+      allow create: if isSignedIn() && request.auth.uid == userId
+        && request.resource.data.role == 'viewer'
+        && request.resource.data.is_active == true;
+      allow delete: if false;
+    }
+
+    // ── employees ────────────────────────────────────────
+    // Read: any active user (viewers need to see the schedule).
+    // Write: admins only.
+    match /employees/{empId} {
+      allow read: if isActiveUser();
+      allow write: if isActiveAdmin();
+    }
+
+    // ── schedules ────────────────────────────────────────
+    // Read: any active user. Write: admins only.
+    // Document ID convention is `${employee_id}_${date}` (schedKey()) —
+    // enforced loosely here by requiring employee_id/date/shift_code to
+    // be present and shift_code to be one of the known codes.
+    match /schedules/{schedId} {
+      allow read: if isActiveUser();
+      allow write: if isActiveAdmin()
+        && request.resource.data.keys().hasAll(['employee_id', 'date', 'shift_code'])
+        && request.resource.data.shift_code in [
+          'M6','M7','M8','M9','MD10','MD11','MD12','E13','E14','E15',
+          'N9','N10','N11','OFF','PH','EO','AL','SL','ML','UL','MOD','ON'
+        ];
+      allow delete: if isActiveAdmin();
+    }
+
+    // ── settings/app ─────────────────────────────────────
+    // Read: any active user (the app needs companyName/timezone/etc
+    //       before rendering). Write: admins only.
+    match /settings/{docId} {
+      allow read: if isActiveUser();
+      allow write: if isActiveAdmin();
+    }
+
+    // ── audit_log ────────────────────────────────────────
+    // Read: admins only (matches the UI gate in renderAuditLog()).
+    // Write: NEVER from the client. Entries are written exclusively by
+    //       the Firestore-trigger Cloud Functions (auditEmployees,
+    //       auditSchedules, auditProfiles, auditSettings) and the
+    //       adminCreateUser/adminResetPassword callables, all of which
+    //       use the Admin SDK and bypass these rules entirely.
+    match /audit_log/{entryId} {
+      allow read: if isActiveAdmin();
+      allow write: if false;
+    }
+
+    // Default deny for anything not explicitly matched above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
