@@ -780,7 +780,7 @@
 
 <!-- ── Firebase SDK ── -->
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { initializeApp, getApps, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
   import {
     getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged,
     EmailAuthProvider, reauthenticateWithCredential, updatePassword, deleteUser
@@ -819,6 +819,44 @@
     query, where, orderBy, limit, serverTimestamp, writeBatch,
     httpsCallable,
     ref, uploadBytes, getDownloadURL, deleteObject
+  };
+
+  // ── Secondary Auth helper ──────────────────────────────────────────────────
+  // createUserWithEmailAndPassword mengganti sesi auth aktif.
+  // Solusi: pakai secondary Firebase app instance yang terpisah dari app utama,
+  // sehingga sesi admin TIDAK ikut tergantikan saat membuat akun karyawan baru.
+  window._createAuthUser = async function(email, password) {
+    const SECONDARY = 'omnishift-secondary';
+    // Buat / ambil secondary app
+    let secondaryApp = getApps().find(a => a.name === SECONDARY);
+    if (!secondaryApp) {
+      secondaryApp = initializeApp(firebaseConfig, SECONDARY);
+    }
+    const secondaryAuth = getAuth(secondaryApp);
+    try {
+      const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+      const uid = cred.user.uid;
+      // Sign out dari secondary agar token tidak menggantung
+      await signOut(secondaryAuth);
+      return uid;
+    } finally {
+      // Bersihkan secondary app agar tidak menumpuk
+      try { await deleteApp(secondaryApp); } catch(e) {}
+    }
+  };
+
+  // Helper rollback: hapus Auth user via secondary app (re-login singkat)
+  window._deleteAuthUser = async function(email, password) {
+    const SECONDARY = 'omnishift-secondary-del';
+    let secondaryApp = getApps().find(a => a.name === SECONDARY);
+    if (!secondaryApp) secondaryApp = initializeApp(firebaseConfig, SECONDARY);
+    const secondaryAuth = getAuth(secondaryApp);
+    try {
+      const cred = await signInWithEmailAndPassword(secondaryAuth, email, password);
+      await deleteUser(cred.user);
+    } finally {
+      try { await deleteApp(secondaryApp); } catch(e) {}
+    }
   };
 
   console.log("✅ Firebase initialized — project: omnishift-2026");
@@ -3933,10 +3971,8 @@ async function saveEmployee() {
   let newAuthUid = null; // simpan uid Auth baru untuk rollback jika Firestore gagal
 
   try {
-    const { db, auth } = window._fb;
-    const { doc, setDoc, collection, addDoc, serverTimestamp,
-            createUserWithEmailAndPassword, updatePassword: fbUpdatePassword,
-            updateEmail: fbUpdateEmail } = window._fbFns;
+    const { db } = window._fb;
+    const { doc, setDoc, collection, addDoc, serverTimestamp } = window._fbFns;
     const upperName = name.toUpperCase();
     const baseFields = { name: upperName, type, position, phone, joinDate, address, email, updated_by: DB.currentUserId };
 
@@ -3968,18 +4004,13 @@ async function saveEmployee() {
       // ── MODE TAMBAH BARU ──
       let authUid = null;
 
-      // Buat akun Firebase Auth jika email & password diisi
+      // Buat akun Firebase Auth menggunakan secondary app
+      // agar sesi admin TIDAK tergantikan
       if (email && password) {
         setBtnLoading(btn, true, 'Membuat akun login...');
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
-        newAuthUid = cred.user.uid;
+        newAuthUid = await window._createAuthUser(email, password);
         authUid = newAuthUid;
-        // Langsung sign out agar sesi admin tidak tergantikan
-        // (karyawan baru tidak otomatis login)
-        // Kita re-sign-in admin setelah selesai tidak diperlukan
-        // karena createUserWithEmailAndPassword mengganti sesi aktif.
-        // Solusi: simpan token admin dulu, lalu restore
-        devLog('info', '[saveEmployee] Auth account created, uid:', authUid);
+        devLog('info', '[saveEmployee] Auth account created via secondary app, uid:', authUid);
       }
 
       setBtnLoading(btn, true, 'Menyimpan data...');
@@ -4002,13 +4033,11 @@ async function saveEmployee() {
     renderAll();
   } catch (err) {
     // Rollback: hapus akun Auth yang terlanjur dibuat jika Firestore gagal
-    if (newAuthUid) {
+    // Menggunakan _deleteAuthUser (secondary app) agar tidak mengganggu sesi admin
+    if (newAuthUid && email && password) {
       try {
-        const currentUser = window._fb.auth.currentUser;
-        if (currentUser && currentUser.uid === newAuthUid) {
-          await window._fbFns.deleteUser(currentUser);
-          devLog('warn', '[saveEmployee] Auth account rolled back');
-        }
+        await window._deleteAuthUser(email, password);
+        devLog('warn', '[saveEmployee] Auth account rolled back successfully');
       } catch(re) { devLog('warn', '[saveEmployee] rollback failed:', re.message); }
     }
     const msg = err.code?.startsWith('auth/') ? mapAuthError(err) : mapDbError(err, err.message);
