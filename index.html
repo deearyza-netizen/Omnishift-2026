@@ -2876,6 +2876,8 @@ async function loadEmployees() {
       phone: data.phone || '',
       joinDate: data.joinDate || '',
       address: data.address || '',
+      email: data.email || '',
+      authUid: data.authUid || null,
       photoUrl: data.photoUrl || null,
     };
   });
@@ -3982,7 +3984,7 @@ async function saveEmployee() {
 
   setBtnLoading(btn, true, 'Menyimpan...');
 
-  let newAuthUid = null; // simpan uid Auth baru untuk rollback jika Firestore gagal
+  let newAuthUid = null;
 
   try {
     const { db } = window._fb;
@@ -3996,14 +3998,16 @@ async function saveEmployee() {
       const photoFields = await syncEmpPhoto(editingEmpId, existing?.photoUrl);
       await setDoc(doc(db, 'employees', editingEmpId), { ...baseFields, ...photoFields }, { merge: true });
 
-      // Update password di Auth jika diisi (email/password baru)
+      // Update password via Cloud Function jika diisi
       if (password && password.length >= 6 && existing?.authUid) {
         try {
-          // Gunakan Admin SDK via callable function jika tersedia,
-          // fallback: simpan flag ke Firestore untuk diproses backend
-          await setDoc(doc(db, 'employees', editingEmpId), { pendingPasswordReset: password }, { merge: true });
-          showToast('🔑 Password baru akan diperbarui oleh sistem', 'info');
-        } catch(e) { devLog('warn', '[saveEmployee] update password hint failed:', e.message); }
+          setBtnLoading(btn, true, 'Memperbarui password...');
+          await callAdminApi('/reset-password', { uid: existing.authUid, password });
+          showToast('🔑 Password berhasil diperbarui', 'success');
+        } catch(e) {
+          devLog('warn', '[saveEmployee] reset password CF failed:', e.message);
+          showToast('⚠️ Data disimpan, tapi password gagal diperbarui: ' + e.message, 'error');
+        }
       }
 
       const idx = DB.employees.findIndex(e => e.id === editingEmpId);
@@ -4016,20 +4020,10 @@ async function saveEmployee() {
 
     } else {
       // ── MODE TAMBAH BARU ──
-      let authUid = null;
-
-      // Buat akun Firebase Auth menggunakan secondary app
-      // agar sesi admin TIDAK tergantikan
-      if (email && password) {
-        setBtnLoading(btn, true, 'Membuat akun login...');
-        newAuthUid = await window._createAuthUser(email, password);
-        authUid = newAuthUid;
-        devLog('info', '[saveEmployee] Auth account created via secondary app, uid:', authUid);
-      }
-
+      // Langkah 1: Simpan ke Firestore dulu (tanpa authUid)
       setBtnLoading(btn, true, 'Menyimpan data...');
       const empRef = await addDoc(collection(db, 'employees'), {
-        ...baseFields, authUid, is_active: true, created_at: serverTimestamp()
+        ...baseFields, authUid: null, is_active: true, created_at: serverTimestamp()
       });
 
       // Photo upload
@@ -4038,22 +4032,32 @@ async function saveEmployee() {
         await setDoc(doc(db, 'employees', empRef.id), photoFields, { merge: true });
       }
 
+      // Langkah 2: Buat akun Auth via Cloud Function (tidak ganggu sesi admin)
+      let authUid = null;
+      if (email && password) {
+        try {
+          setBtnLoading(btn, true, 'Membuat akun login...');
+          const result = await callAdminApi('/users', { email, password, name: upperName, role: 'viewer' });
+          authUid = result.uid || null;
+          if (authUid) {
+            // Simpan authUid ke Firestore
+            await setDoc(doc(db, 'employees', empRef.id), { authUid }, { merge: true });
+            newAuthUid = null; // CF sudah handle, tidak perlu rollback manual
+          }
+        } catch(cfErr) {
+          devLog('warn', '[saveEmployee] CF createUser failed:', cfErr.message);
+          showToast('⚠️ Karyawan disimpan, tapi akun login gagal dibuat: ' + cfErr.message, 'error');
+        }
+      }
+
       DB.employees.push({ id: empRef.id, ...baseFields, authUid, is_active: true, photoUrl: photoFields.photoUrl || null });
-      newAuthUid = null; // sukses — tidak perlu rollback
+      newAuthUid = null;
       showToast('✅ Karyawan ' + upperName + (authUid ? ' + akun login' : '') + ' ditambahkan', 'success');
     }
 
     closeModal('emp-modal');
     renderAll();
   } catch (err) {
-    // Rollback: hapus akun Auth yang terlanjur dibuat jika Firestore gagal
-    // Menggunakan _deleteAuthUser (secondary app) agar tidak mengganggu sesi admin
-    if (newAuthUid && email && password) {
-      try {
-        await window._deleteAuthUser(email, password);
-        devLog('warn', '[saveEmployee] Auth account rolled back successfully');
-      } catch(re) { devLog('warn', '[saveEmployee] rollback failed:', re.message); }
-    }
     const msg = err.code?.startsWith('auth/') ? mapAuthError(err) : mapDbError(err, err.message);
     showToast('❌ Gagal simpan karyawan: ' + msg, 'error');
   } finally {
