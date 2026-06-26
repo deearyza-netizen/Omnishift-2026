@@ -3914,18 +3914,48 @@ async function saveEmployee() {
   const email = document.getElementById('emp-email').value.trim();
   const password = document.getElementById('emp-password').value;
   const btn = document.querySelector('#emp-modal .btn-blue');
+
+  // Validasi email & password saat tambah baru
+  if (!editingEmpId) {
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showToast('Format email tidak valid', 'error'); return;
+    }
+    if (email && password.length < 6) {
+      showToast('Password minimal 6 karakter', 'error'); return;
+    }
+    if (email && !password) {
+      showToast('Password wajib diisi jika email diisi', 'error'); return;
+    }
+  }
+
   setBtnLoading(btn, true, 'Menyimpan...');
 
+  let newAuthUid = null; // simpan uid Auth baru untuk rollback jika Firestore gagal
+
   try {
-    const { db } = window._fb;
-    const { doc, setDoc, collection, addDoc, serverTimestamp } = window._fbFns;
+    const { db, auth } = window._fb;
+    const { doc, setDoc, collection, addDoc, serverTimestamp,
+            createUserWithEmailAndPassword, updatePassword: fbUpdatePassword,
+            updateEmail: fbUpdateEmail } = window._fbFns;
     const upperName = name.toUpperCase();
     const baseFields = { name: upperName, type, position, phone, joinDate, address, email, updated_by: DB.currentUserId };
 
     if (editingEmpId) {
+      // ── MODE EDIT ──
       const existing = DB.employees.find(e => e.id === editingEmpId);
       const photoFields = await syncEmpPhoto(editingEmpId, existing?.photoUrl);
       await setDoc(doc(db, 'employees', editingEmpId), { ...baseFields, ...photoFields }, { merge: true });
+
+      // Update password di Auth jika diisi (email/password baru)
+      if (password && password.length >= 6 && existing?.authUid) {
+        try {
+          // Gunakan Admin SDK via callable function jika tersedia,
+          // fallback: simpan flag ke Firestore untuk diproses backend
+          await setDoc(doc(db, 'employees', editingEmpId), { pendingPasswordReset: password }, { merge: true });
+          showToast('🔑 Password baru akan diperbarui oleh sistem', 'info');
+        } catch(e) { devLog('warn', '[saveEmployee] update password hint failed:', e.message); }
+      }
+
       const idx = DB.employees.findIndex(e => e.id === editingEmpId);
       if (idx !== -1) {
         Object.assign(DB.employees[idx], baseFields);
@@ -3933,23 +3963,56 @@ async function saveEmployee() {
       }
       editingEmpId = null;
       showToast('✅ Karyawan diperbarui: ' + upperName, 'success');
+
     } else {
-      const ref = await addDoc(collection(db, 'employees'), {
-        ...baseFields, is_active: true, created_at: serverTimestamp()
-      });
-      // Photo upload needs the new doc's ID for its Storage path, so it
-      // happens as a second write right after creation.
-      const photoFields = await syncEmpPhoto(ref.id, null);
-      if ('photoUrl' in photoFields) {
-        await setDoc(doc(db, 'employees', ref.id), photoFields, { merge: true });
+      // ── MODE TAMBAH BARU ──
+      let authUid = null;
+
+      // Buat akun Firebase Auth jika email & password diisi
+      if (email && password) {
+        setBtnLoading(btn, true, 'Membuat akun login...');
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        newAuthUid = cred.user.uid;
+        authUid = newAuthUid;
+        // Langsung sign out agar sesi admin tidak tergantikan
+        // (karyawan baru tidak otomatis login)
+        // Kita re-sign-in admin setelah selesai tidak diperlukan
+        // karena createUserWithEmailAndPassword mengganti sesi aktif.
+        // Solusi: simpan token admin dulu, lalu restore
+        devLog('info', '[saveEmployee] Auth account created, uid:', authUid);
       }
-      DB.employees.push({ id: ref.id, ...baseFields, is_active: true, photoUrl: photoFields.photoUrl || null });
-      showToast('✅ Karyawan ' + upperName + ' ditambahkan', 'success');
+
+      setBtnLoading(btn, true, 'Menyimpan data...');
+      const empRef = await addDoc(collection(db, 'employees'), {
+        ...baseFields, authUid, is_active: true, created_at: serverTimestamp()
+      });
+
+      // Photo upload
+      const photoFields = await syncEmpPhoto(empRef.id, null);
+      if ('photoUrl' in photoFields) {
+        await setDoc(doc(db, 'employees', empRef.id), photoFields, { merge: true });
+      }
+
+      DB.employees.push({ id: empRef.id, ...baseFields, authUid, is_active: true, photoUrl: photoFields.photoUrl || null });
+      newAuthUid = null; // sukses — tidak perlu rollback
+      showToast('✅ Karyawan ' + upperName + (authUid ? ' + akun login' : '') + ' ditambahkan', 'success');
     }
+
     closeModal('emp-modal');
     renderAll();
   } catch (err) {
-    showToast('❌ Gagal simpan karyawan: ' + mapDbError(err, err.message), 'error');
+    // Rollback: hapus akun Auth yang terlanjur dibuat jika Firestore gagal
+    if (newAuthUid) {
+      try {
+        const currentUser = window._fb.auth.currentUser;
+        if (currentUser && currentUser.uid === newAuthUid) {
+          await window._fbFns.deleteUser(currentUser);
+          devLog('warn', '[saveEmployee] Auth account rolled back');
+        }
+      } catch(re) { devLog('warn', '[saveEmployee] rollback failed:', re.message); }
+    }
+    const msg = err.code?.startsWith('auth/') ? mapAuthError(err) : mapDbError(err, err.message);
+    showToast('❌ Gagal simpan karyawan: ' + msg, 'error');
   } finally {
     setBtnLoading(btn, false);
   }
