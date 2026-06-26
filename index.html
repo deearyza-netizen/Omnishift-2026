@@ -1018,7 +1018,6 @@
               <button class="emp-view-btn active" id="emp-view-grid" onclick="setEmpView('grid')" title="Grid View">⊞</button>
               <button class="emp-view-btn" id="emp-view-list" onclick="setEmpView('list')" title="List View">☰</button>
             </div>
-            <button class="btn-sm btn-blue" onclick="openAddEmployee()">➕ Tambah Karyawan</button>
           </div>
         </div>
         <!-- Enhanced Stats bar -->
@@ -1174,7 +1173,7 @@
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                   <button class="btn-sm btn-outline" onclick="openRoleGuide()" title="Panduan Role">📖 Role Guide</button>
                   <button class="btn-sm btn-outline" onclick="exportUsersCSV()" title="Export Daftar User">⬇️ Export</button>
-                  <button class="btn-sm btn-blue" onclick="showSelfRegisterInfo()">ℹ️ Cara Tambah User</button>
+                  <button class="btn-sm btn-blue" onclick="openAddEmployee()">➕ Tambah Karyawan</button>
                 </div>
               </div>
 
@@ -3859,6 +3858,8 @@ function openAddEmployee() {
   document.getElementById('emp-phone').value='';
   document.getElementById('emp-join-date').value='';
   document.getElementById('emp-address').value='';
+  document.getElementById('emp-email').value='';
+  document.getElementById('emp-password').value='';
   resetEmpPhotoUI(null);
   openModal('emp-modal');
 }
@@ -3874,6 +3875,8 @@ function openEditEmployee(id) {
   document.getElementById('emp-phone').value=emp.phone||'';
   document.getElementById('emp-join-date').value=emp.joinDate||'';
   document.getElementById('emp-address').value=emp.address||'';
+  document.getElementById('emp-email').value=emp.email||'';
+  document.getElementById('emp-password').value='';
   resetEmpPhotoUI(emp.photoUrl||null);
   openModal('emp-modal');
 }
@@ -3908,6 +3911,8 @@ async function saveEmployee() {
   const phone = document.getElementById('emp-phone').value.trim();
   const joinDate = document.getElementById('emp-join-date').value;
   const address = document.getElementById('emp-address').value.trim();
+  const email = document.getElementById('emp-email').value.trim();
+  const password = document.getElementById('emp-password').value;
   const btn = document.querySelector('#emp-modal .btn-blue');
   setBtnLoading(btn, true, 'Menyimpan...');
 
@@ -3915,7 +3920,7 @@ async function saveEmployee() {
     const { db } = window._fb;
     const { doc, setDoc, collection, addDoc, serverTimestamp } = window._fbFns;
     const upperName = name.toUpperCase();
-    const baseFields = { name: upperName, type, position, phone, joinDate, address, updated_by: DB.currentUserId };
+    const baseFields = { name: upperName, type, position, phone, joinDate, address, email, updated_by: DB.currentUserId };
 
     if (editingEmpId) {
       const existing = DB.employees.find(e => e.id === editingEmpId);
