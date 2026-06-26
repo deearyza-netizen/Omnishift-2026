@@ -1552,6 +1552,20 @@
         <label class="form-label">Alamat</label>
         <textarea class="form-input" id="emp-address" rows="2" placeholder="Alamat tempat tinggal" style="resize:vertical;"></textarea>
       </div>
+      <div style="border-top:1px solid var(--border);margin:8px 0 12px;padding-top:12px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">🔐 Akun Login</div>
+        <div class="form-group">
+          <label class="form-label">Email <span style="color:var(--text3);font-weight:400;font-size:11px;">(untuk login)</span></label>
+          <input class="form-input" id="emp-email" type="email" placeholder="contoh@email.com">
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Password <span style="color:var(--text3);font-weight:400;font-size:11px;">(untuk login, min. 6 karakter)</span></label>
+          <div style="position:relative;">
+            <input class="form-input" id="emp-password" type="password" placeholder="Min. 6 karakter" style="padding-right:42px;">
+            <button type="button" onclick="(function(){var i=document.getElementById('emp-password');i.type=i.type==='password'?'text':'password';})()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;color:var(--text3);" title="Tampilkan/sembunyikan password">👁</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn-sm btn-cancel" onclick="closeModal('emp-modal')">Batal</button>
